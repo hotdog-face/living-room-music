@@ -7,13 +7,15 @@ karaoke lyrics and four visualizers, and can colour the room's Hue lights to mat
 Personal home project. The YouTube Music side uses unofficial access (ytmusicapi, yt-dlp), so it is not a product
 and isn't meant to be offered to others.
 
-![Home](docs/01-home.jpg)
-![Karaoke lyrics](docs/03-player-karaoke-lyrics.jpg)
-![Aurora in the album's colours](docs/05-aurora-visualizer-album-colors.jpg)
+![Lyrics, Ribbon, Aurora, Particles and Bars on Daft Punk's One More Time](docs/portfolio/visualizers.gif)
+
+![Home](docs/portfolio/screenshots/01-home.jpg)
+![Karaoke lyrics](docs/portfolio/screenshots/03-player-karaoke-lyrics.jpg)
+![Aurora in the album's colours](docs/portfolio/screenshots/05-aurora-visualizer-album-colors.jpg)
 
 ## How it works
 
-![How it works](docs/how-it-works.png)
+![How it works](docs/portfolio/how-it-works.png)
 
 | Folder | What's in it |
 | --- | --- |
@@ -22,6 +24,14 @@ and isn't meant to be offered to others.
 | `homeassistant/` | The input boolean and automation that turn the server's MQTT cue into Hue scenes (only lights already on change, and the room is restored afterwards) |
 | `tools/label_kids.py` | Sorts the family's YouTube watch history into kids' songs with Claude |
 | `scripts/` | Install the server over ssh, build and install the TV app over adb |
+
+## Portfolio materials
+
+Everything for the write-up on mitchellv.me is in [`docs/portfolio`](docs/portfolio):
+
+- [Case study](docs/portfolio/case-study.md) ([PDF](docs/portfolio/case-study.pdf)): the pitch, features, design process, engineering notes, shot list and captions
+- [Screenshots](docs/portfolio/screenshots): nine captures straight from the TV (1920 × 1080)
+- [Screen recordings](docs/portfolio/videos): eight clips recorded on the TV, listed in [CLIPS.txt](docs/portfolio/videos/CLIPS.txt). Best single clip: [06-visualizer-tour.mp4](docs/portfolio/videos/06-visualizer-tour.mp4)
 
 ## Setup
 

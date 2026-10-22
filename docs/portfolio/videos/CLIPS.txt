@@ -1,0 +1,10 @@
+Screen recordings straight from the living room TV (1920x1080, no camera). Put your phone clips of the room next to these.
+
+01-browse-home.mp4                 Moving down the Home screen: stations, Plex albums, new finds
+02-start-album-with-story.mp4      Queen, Live Killers: About the album story from Wikipedia, then the player controls
+03-karaoke-lyrics-and-calm-mode.mp4  Karaoke lyrics with the controls folded away (calm mode)
+04-open-album-daft-punk.mp4        Search result to album page to playing One More Time (FLAC)
+05-karaoke-daft-punk.mp4           One More Time, karaoke lyrics in the album's colours
+06-visualizer-tour.mp4             Best single clip: lyrics, Ribbon, Aurora, Particles, Bars
+07-takanaka-albums.mp4             Panning across the Takanaka covers, opening All Of Me (24-bit / 192 kHz, played as 16 / 48)
+08-aurora-takanaka.mp4             Aurora in the album's blues, then calm mode fills the screen
