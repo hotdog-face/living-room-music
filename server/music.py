@@ -982,6 +982,8 @@ def home():
 def list_page(kind, id_):
     if id_.startswith("plex:"):
         return shelf_album(id_[5:])
+    if kind == "kids":
+        return kids_list(id_)
     yt = YT.get()
     if kind == "album":
         a = yt.get_album(id_)
@@ -1127,16 +1129,28 @@ def kids_page():
     if not songs:
         return {"rows": []}
     pick = lambda lst, i: f"/ytimg?v={lst[min(i, len(lst) - 1)]['v']}" if lst else None
-    stations = [{"type": "station", "id": "kids", "title": "Dance party", "subtitle": f"All {len(songs)} favorites, shuffled",
+    stations = [{"type": "kids", "id": "kids", "title": "Dance party", "subtitle": f"All {len(songs)} favorites",
                  "art": pick(songs, 0)}]
     rows = []
     for gid, row_title, st_title, test in KID_GROUPS:
         g = [s for s in songs if test(s)]
         if len(g) >= 4:
-            stations.append({"type": "station", "id": f"kids:{gid}", "title": st_title, "subtitle": f"{len(g)} songs", "art": pick(g, 1)})
+            stations.append({"type": "kids", "id": f"kids:{gid}", "title": st_title, "subtitle": f"{len(g)} songs", "art": pick(g, 1)})
             rows.append({"id": f"kids-{gid}", "title": row_title, "items": [kid_track(s) for s in g[:40]]})
     return {"rows": [{"id": "kids-stations", "title": "Dance party", "items": stations},
                      {"id": "kids-top", "title": "Played the most", "items": [kid_track(s) for s in songs[:40]]}] + rows}
+
+
+def kids_list(id_):
+    """A Kids card opened as a list: every song in it, most played first (pick one, or Play / Shuffle)."""
+    songs = kids_songs()
+    title = "Dance party"
+    if ":" in id_:
+        g = next((g for g in KID_GROUPS if g[0] == id_.split(":")[1]), None)
+        if g:
+            title, songs = g[2], [s for s in songs if g[3](s)]
+    return {"title": title, "subtitle": "The kids' favorites", "art": f"/ytimg?v={songs[0]['v']}" if songs else None,
+            "tracks": [kid_track(s) for s in songs]}
 
 
 def kids_station(id_, exclude, n):

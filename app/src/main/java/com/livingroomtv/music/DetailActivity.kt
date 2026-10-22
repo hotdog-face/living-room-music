@@ -42,7 +42,7 @@ class DetailActivity : Activity() {
         art = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP; setBackgroundColor(Colors.SURFACE); elevation = px(24).toFloat() }
         left.addView(art, LinearLayout.LayoutParams(px(400), px(400)))
         if (type == "artist") art.oval() else art.round(px(24).toFloat())
-        kind = label(19, Accent.color, bold = true, text = when (type) { "album" -> "Album"; "artist" -> "Artist"; "mood" -> "Mood or genre"; else -> "Playlist" })
+        kind = label(19, Accent.color, bold = true, text = when (type) { "album" -> "Album"; "artist" -> "Artist"; "mood" -> "Mood or genre"; "kids" -> "Kids"; else -> "Playlist" })
         left.addView(kind, LinearLayout.LayoutParams(-2, -2).apply { topMargin = px(36) })
         title = label(42, lines = 3, text = intent.getStringExtra("title") ?: "", heavy = true)
         left.addView(title, LinearLayout.LayoutParams(px(460), -2).apply { topMargin = px(12) })
@@ -82,10 +82,10 @@ class DetailActivity : Activity() {
             add(pill(R.drawable.ic_radio, "Radio", primary = true) { Player.play(this, emptyList(), 0, "artist:$key"); Go.nowPlaying(this) })
             if (top.isNotEmpty()) add(pill(R.drawable.ic_play, "Top songs") { Player.play(this, top, 0, "artist:$key"); Go.nowPlaying(this) })
         } else if (top.isNotEmpty()) {
-            val after = if (key == "LM") "likes" else null              // Liked songs keeps going; others end in radio
+            val after = after()                                   // Liked songs and Kids keep going; others end in radio
             add(pill(R.drawable.ic_play, "Play", primary = true) { Player.play(this, top, 0, after); Go.nowPlaying(this) })
             add(pill(R.drawable.ic_shuffle, "Shuffle") { Player.play(this, top.shuffled(), 0, after); Go.nowPlaying(this) })
-            add(pill(R.drawable.ic_radio, "Radio") {
+            if (type != "kids") add(pill(R.drawable.ic_radio, "Radio") {
                 Player.play(this, emptyList(), 0, if (key == "LM") "blend" else "radio:${top.random().v}"); Go.nowPlaying(this)
             })
         }
@@ -110,7 +110,7 @@ class DetailActivity : Activity() {
                     override fun getView(i: Int, old: View?, parent: ViewGroup?): View =
                         (old as? TrackLine)?.takeIf { it.track === p.tracks[i] } ?: TrackLine(this@DetailActivity, p.tracks[i], number = i + 1)
                 }
-                setOnItemClickListener { _, _, i, _ -> Player.play(this@DetailActivity, p.tracks, i, if (key == "LM") "likes" else null); Go.nowPlaying(this@DetailActivity) }
+                setOnItemClickListener { _, _, i, _ -> Player.play(this@DetailActivity, p.tracks, i, after()); Go.nowPlaying(this@DetailActivity) }
                 setOnItemLongClickListener { _, _, i, _ -> Go.menu(this@DetailActivity, p.tracks[i]); true }
             }
             songs = l
@@ -118,6 +118,9 @@ class DetailActivity : Activity() {
             if (p.tracks.isNotEmpty()) l.requestFocus() else buttons.getChildAt(0)?.requestFocus()
         }
     }
+
+    /** What plays once the list runs out: Liked songs keeps shuffling likes, a Kids list keeps to its kids' songs. */
+    private fun after(): String? = when { key == "LM" -> "likes"; type == "kids" -> key; else -> null }
 
     /** A soft wash of the album's colour behind the top of the page. */
     private fun glow(bmp: android.graphics.Bitmap) {
