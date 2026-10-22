@@ -4,6 +4,8 @@ A calm, audio-only music app for Android TV (built for an NVIDIA Shield), with a
 It plays YouTube Music and a Plex library with no videos. It finds new music from your liked songs, shows synced
 karaoke lyrics and four visualizers, and can colour the room's Hue lights to match each album through Home Assistant.
 
+**Case study and videos:** [mitchellv.me/work/living-room-music](https://www.mitchellv.me/work/living-room-music) · by [Mitchell Vizensky](https://www.mitchellv.me), game UX designer
+
 Personal home project. The YouTube Music side uses unofficial access (ytmusicapi, yt-dlp), so it is not a product
 and isn't meant to be offered to others.
 
