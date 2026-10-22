@@ -1,0 +1,12 @@
+build/
+.gradle/
+local.properties
+*.apk
+__pycache__/
+.DS_Store
+# never commit sign-in or secrets
+*.secret
+*.token
+cookies.txt
+ytmusic-browser.json
+.kotlin/

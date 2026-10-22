@@ -1,0 +1,16 @@
+[Unit]
+Description=Living Room TV music (YouTube Music, sound only, with discovery from the liked songs; port 8097)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=__USER__
+WorkingDirectory=/srv/music
+ExecStart=/srv/music/venv/bin/python /srv/music/music.py
+StandardOutput=append:/srv/music/music.log
+StandardError=append:/srv/music/music.log
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

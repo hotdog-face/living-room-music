@@ -1,0 +1,80 @@
+- id: music_lights_follow
+  alias: Music - living room lights follow the album
+  description: The Music app publishes the album colours (MQTT livingroom/music/lights). Only lights that are already on change.
+  mode: queued
+  max: 4
+  triggers:
+    - trigger: mqtt
+      topic: livingroom/music/lights
+  variables:
+    msg: "{{ trigger.payload_json }}"
+    colour_lights:
+      - light.living_room_track_light_bulb
+      - light.living_room_track_light_bulb_2
+      - light.living_room_track_light_bulb_3
+      - light.living_room_santa
+      - light.living_room_ikea_lamp
+      - light.living_room_large_lantern
+      - light.living_room_big_smiley_lamp
+    strips:
+      - light.living_room_tv_strip_light
+      - light.living_room_strip_light_behind_tv
+    lit: "{{ (colour_lights + strips) | select('is_state', 'on') | list }}"
+  actions:
+    - choose:
+        - conditions: "{{ msg.mode == 'off' }}"
+          sequence:
+            - condition: state
+              entity_id: input_boolean.music_lights_session
+              state: "on"
+            - action: scene.turn_on
+              target:
+                entity_id: scene.before_music
+              data:
+                transition: 3
+            - action: input_boolean.turn_off
+              target:
+                entity_id: input_boolean.music_lights_session
+        - conditions: "{{ msg.mode in ['song', 'party'] and lit | length > 0 }}"
+          sequence:
+            - if:
+                - condition: state
+                  entity_id: input_boolean.music_lights_session
+                  state: "off"
+              then:
+                - action: scene.create
+                  data:
+                    scene_id: before_music
+                    snapshot_entities: "{{ lit }}"
+                - action: input_boolean.turn_on
+                  target:
+                    entity_id: input_boolean.music_lights_session
+            - repeat:
+                for_each: "{{ lit | reject('in', strips) | list }}"
+                sequence:
+                  - action: light.turn_on
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ repeat.item }}"
+                    data:
+                      rgb_color: "{{ msg.colors[(repeat.index - 1) % (msg.colors | length)] }}"
+                      transition: 3
+            - repeat:
+                for_each: "{{ lit | select('in', strips) | list }}"
+                sequence:
+                  - if: "{{ msg.mode == 'party' }}"
+                    then:
+                      - action: light.turn_on
+                        continue_on_error: true
+                        target:
+                          entity_id: "{{ repeat.item }}"
+                        data:
+                          effect: prism
+                    else:
+                      - action: light.turn_on
+                        continue_on_error: true
+                        target:
+                          entity_id: "{{ repeat.item }}"
+                        data:
+                          rgb_color: "{{ msg.accent }}"
+                          transition: 3

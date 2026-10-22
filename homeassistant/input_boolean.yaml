@@ -1,0 +1,6 @@
+
+# Music app (Oct 21 2026): the living room lights take the album's colours while music plays (automations.yaml:
+# music_lights_follow). On while a listening session has changed the lights; scene.before_music restores them.
+input_boolean:
+  music_lights_session:
+    name: Music is colouring the lights
