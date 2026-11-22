@@ -5,8 +5,13 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
-    <!-- the meters read our own player's output (Android's Visualizer); nothing is recorded -->
+    <!-- the meters read our own player's output (Android's Visualizer), and Search listens while you talk
+         (SpeechRecognizer); nothing is recorded or kept -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <queries>
+        <!-- Android 11+ package visibility: SpeechRecognizer has to see Google's recognition service -->
+        <intent><action android:name="android.speech.RecognitionService" /></intent>
+    </queries>
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
     <uses-feature android:name="android.software.leanback" android:required="false" />

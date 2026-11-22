@@ -38,6 +38,8 @@ class NowPlayingActivity : Activity() {
     private lateinit var lyricsBox: FrameLayout
     private lateinit var lyricsCol: LinearLayout
     private lateinit var badge: TextView
+    private lateinit var starBox: FrameLayout                 // a CD song's rating, beside its title
+    private lateinit var trashBtn: IconButton                 // only for songs from the CD rips
     private lateinit var card: LinearLayout
     private lateinit var thumb: ImageView
     private lateinit var title: TextView
@@ -139,6 +141,8 @@ class NowPlayingActivity : Activity() {
         words.addView(title)
         words.addView(artist, LinearLayout.LayoutParams(-2, -2).apply { topMargin = px(8) })
         head.addView(words, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = px(26) })
+        starBox = FrameLayout(this)
+        head.addView(starBox, LinearLayout.LayoutParams(-2, -2).apply { setMargins(px(20), 0, px(30), 0) })
         val side = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.END }
         caption = label(19, Color.WHITE, bold = true).apply { gravity = Gravity.END }
         nextUp = label(18, Color.argb(170, 255, 255, 255)).apply { gravity = Gravity.END }
@@ -197,9 +201,10 @@ class NowPlayingActivity : Activity() {
             caption.text = captionFor(storyBtn)
             middleForLyrics()
         }
+        trashBtn = IconButton(this, R.drawable.ic_delete, 80, "Delete from my CDs") { Player.current?.let { Go.deleteCd(this, it) } }
         if (Config.room != "living room") lightsBtn.visibility = View.GONE   // the lights are the living room's
         val buttons = listOf(displayBtn, lightsBtn, storyBtn, IconButton(this, R.drawable.ic_prev, 92, "Previous") { Player.prev(this) }, playBtn,
-            IconButton(this, R.drawable.ic_next, 92, "Next") { Player.next(this) }, upBtn, downBtn)
+            IconButton(this, R.drawable.ic_next, 92, "Next") { Player.next(this) }, upBtn, downBtn, trashBtn)
         for (b in buttons) {
             b.onFocus = { btn, has -> if (has) caption.text = captionFor(btn); if (!has && btn === downBtn) armed = null }
             controls.addView(b, LinearLayout.LayoutParams(b.layoutParams).apply { setMargins(px(18), 0, px(18), 0) })
@@ -228,6 +233,7 @@ class NowPlayingActivity : Activity() {
         lightsBtn -> if (Lights.enabled) "Lights: on · the room follows the music" else "Lights: off · the room stays as it is"
         playBtn -> if (Player.playing) "Pause" else "Play"
         upBtn -> if (Player.current?.liked == true) "In Liked songs · press to remove" else "Love it · adds to Liked songs"
+        trashBtn -> "Delete from my CDs · removes this song's file for good"
         else -> b.word
     }
 
@@ -326,6 +332,8 @@ class NowPlayingActivity : Activity() {
             artist.text = listOfNotNull(t.artist, t.album).joinToString("  ·  ")
             badge.text = t.quality ?: ""
             badge.visibility = if (t.quality == null) View.GONE else View.VISIBLE
+            starBox.removeAllViews()
+            if (t.stars > 0) starBox.addView(stars(this, t))
             Images.load(t.art, thumb, px(96))
             Images.load(t.art, bigArt, px(560)) { bmp -> Accent.from(bmp); wash.colors(bmp) }
             loadLyrics(t)
@@ -334,6 +342,11 @@ class NowPlayingActivity : Activity() {
         playBtn.set(if (Player.playing) R.drawable.ic_pause else R.drawable.ic_play)
         playBtn.alpha = if (Player.buffering) 0.6f else 1f
         upBtn.img.alpha = if (t?.liked == true || upBtn.hasFocus()) 1f else 0.55f
+        val cd = t != null && Go.cdSong(t) != null
+        if (trashBtn.visibility == View.VISIBLE != cd) {
+            if (!cd && trashBtn.hasFocus()) upBtn.requestFocus()
+            trashBtn.visibility = if (cd) View.VISIBLE else View.GONE
+        }
         (controls.focusedChild as? IconButton)?.let { caption.text = captionFor(it) }
         val dur = Player.duration()
         val pos = scrubTo ?: Player.position()

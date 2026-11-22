@@ -40,7 +40,7 @@ class MainActivity : Activity() {
             setPadding(px(96), px(52), px(96), px(6))
         }
         tabs.addView(brand(), LinearLayout.LayoutParams(-2, -2).apply { marginEnd = px(54) })
-        for ((id, word) in listOf("home" to "Home", "popular" to "Popular", "kids" to "Kids", "shelf" to "Plex", "liked" to "Liked songs", "search" to ""))
+        for ((id, word) in listOf("home" to "Home", "popular" to "Popular", "kids" to "Kids", "shelf" to "Plex", "cds" to "CDs", "liked" to "Liked songs", "search" to ""))
             tabs.addView(tabButton(id, word))
         root.addView(tabs)
         status = label(23, Colors.DIM, lines = 3).apply { setPadding(px(96), px(30), px(96), 0); visibility = View.GONE }
@@ -114,6 +114,7 @@ class MainActivity : Activity() {
         when (which) {
             "home" -> loadHome()
             "shelf" -> loadShelf()
+            "cds" -> loadCds()
             "kids" -> loadKids()
             "popular" -> loadPopular()
             "search" -> searchPage()
@@ -152,6 +153,14 @@ class MainActivity : Activity() {
                 addRows(rows.filter { it.items.isNotEmpty() })
             }.onFailure { say(it.message ?: "Couldn't reach your Plex library") }
         }
+    }
+
+    /** Mitchell's CD collection as a cover flow of jewel cases (Cds.kt); new rips appear on their own. */
+    private fun loadCds() {
+        say(null)
+        val shelf = CdShelf(this)
+        body.addView(shelf, LinearLayout.LayoutParams(-1, -2))
+        if (!tabs.hasFocus()) shelf.post { shelf.focusFlow() }
     }
 
     /** The kids' dance music from the YouTube history: a Dance party station, most played, Cars, sing-alongs, party hits. */
@@ -209,14 +218,88 @@ class MainActivity : Activity() {
             }
         }
         searchBox = box
-        body.addView(FrameLayout(this).apply {
+        // Talk instead of typing: the remote's mic button always opens Google Assistant (Android TV keeps
+        // KEYCODE_ASSIST for itself), so Search has its own mic. It opens first: OK = speak; RIGHT = type.
+        val mic = TextView(this).apply {
+            isFocusable = true
+            contentDescription = "Search by voice"
+            gravity = Gravity.CENTER
+            val icon = getDrawable(R.drawable.ic_mic)!!.mutate().apply { setBounds(0, 0, px(40), px(40)) }
+            setCompoundDrawablesRelative(icon, null, null, null)
+            setPadding(px(22), px(18), px(22), px(18))
+            val bg = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Colors.SURFACE2) }
+            background = bg
+            fun paint(f: Boolean) { bg.setColor(if (f) Color.WHITE else Colors.SURFACE2); icon.setTint(if (f) Colors.INK else Colors.TEXT) }
+            paint(false)
+            setOnFocusChangeListener { _, f -> paint(f) }
+            setOnClickListener { listen() }
+        }
+        body.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             setPadding(px(96), px(30), px(96), px(10))
-            addView(box, FrameLayout.LayoutParams(px(900), -2))
+            addView(mic, LinearLayout.LayoutParams(px(84), px(84)).apply { marginEnd = px(20) })
+            addView(box, LinearLayout.LayoutParams(px(900), -2))
         })
-        box.requestFocus()
-        box.post { (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(box, 0) }
+        say(if (lastQuery.isEmpty()) "Press OK and say a song, artist or album. Press right to type." else null)
+        mic.requestFocus()
         if (lastQuery.isNotEmpty()) runSearch(lastQuery)
     }
+
+    private var recognizer: android.speech.SpeechRecognizer? = null
+
+    /**
+     * Listen here, in our own window: Google's "Speak now" screen (RecognizerIntent -> Katniss VoiceInputActivity)
+     * opens but never starts listening on the Shields ("call for recognition service without RECORD_AUDIO
+     * permissions" - it checks the caller's foreground state). SpeechRecognizer runs as us, in the foreground,
+     * with our RECORD_AUDIO, so Google's recognizer hears the remote's mic. Words appear in the box as you talk.
+     */
+    private fun listen() {
+        if (!android.speech.SpeechRecognizer.isRecognitionAvailable(this)) { say("Voice search isn't available on this TV"); return }
+        if (tab != "search") show("search")
+        recognizer?.destroy()
+        val r = android.speech.SpeechRecognizer.createSpeechRecognizer(this)
+        recognizer = r
+        r.setRecognitionListener(object : android.speech.RecognitionListener {
+            override fun onReadyForSpeech(p: Bundle?) = say("Listening… say a song, artist or album")
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rms: Float) {}
+            override fun onBufferReceived(b: ByteArray?) {}
+            override fun onEndOfSpeech() = say("Got it…")
+            override fun onEvent(t: Int, p: Bundle?) {}
+            override fun onPartialResults(p: Bundle?) {
+                words(p)?.let { searchBox?.setText(it); searchBox?.setSelection(it.length) }
+            }
+            override fun onResults(p: Bundle?) {
+                val said = words(p)
+                if (said.isNullOrEmpty()) { say("I didn't catch that. Press OK to try again."); return }
+                searchBox?.setText(said)
+                runSearch(said)
+            }
+            override fun onError(e: Int) {
+                android.util.Log.w("MusicVoice", "recognizer error $e")
+                say(when (e) {
+                    android.speech.SpeechRecognizer.ERROR_NO_MATCH, android.speech.SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
+                        "I didn't hear anything. Press OK and talk into the remote."
+                    android.speech.SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "The microphone is turned off for Music."
+                    android.speech.SpeechRecognizer.ERROR_NETWORK, android.speech.SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Voice search needs the internet."
+                    else -> "Voice search didn't work (error $e). Press OK to try again."
+                })
+            }
+        })
+        r.startListening(android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(android.speech.RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            .putExtra(android.speech.RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            .putExtra(android.speech.RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName))
+        say("Starting the microphone…")
+    }
+
+    private fun words(b: Bundle?) =
+        b?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+
+    override fun onDestroy() { recognizer?.destroy(); recognizer = null; super.onDestroy() }
+
 
     private fun runSearch(q: String) {
         if (q.isBlank()) return
@@ -241,11 +324,15 @@ class MainActivity : Activity() {
         super.onUserLeaveHint()
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean =
-        Go.mediaKey(this, keyCode) || super.onKeyDown(keyCode, event)
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        // A SEARCH key (phone remote app, keyboards; the Shield remote's mic is ASSIST and never reaches us) = talk.
+        if (keyCode == KeyEvent.KEYCODE_SEARCH) { listen(); return true }
+        return Go.mediaKey(this, keyCode) || super.onKeyDown(keyCode, event)
+    }
 
     @Deprecated("Back from Search returns Home; Back on Home leaves the music playing")
     override fun onBackPressed() {
         if (tab != "home") show("home") else { Player.stop(); super.onBackPressed() }   // Back out of Music: the music stops too
     }
+
 }

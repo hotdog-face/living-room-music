@@ -39,6 +39,11 @@ missing = [k for k in ("cookie", "x-goog-authuser") if k not in headers]
 if missing:
     sys.exit(f"Didn't find {', '.join(missing)} in what was pasted. Copy the Request headers again (down past the cookie).")
 headers["user-agent"] = DESKTOP
+if "authorization" not in headers:                             # the one-click tool sends only the cookies: make it here
+    from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
+    headers["authorization"] = get_authorization(sapisid_from_cookie(headers["cookie"]) + " https://music.youtube.com")
+    headers.setdefault("origin", "https://music.youtube.com")
+    headers.setdefault("x-origin", "https://music.youtube.com")
 brand = headers.pop("x-goog-pageid", None)                     # YouTube Music as a brand channel: pass it as the user
 setup_browser(OUT, "\n".join(f"{k}: {v}" for k, v in headers.items()))
 os.chmod(OUT, 0o600)

@@ -10,9 +10,12 @@ Audio-only music app for Android TV (com.livingroomtv.music) plus a home server.
 | `server/signin.py` | Saves the YouTube Music sign-in from pasted browser request headers |
 | `server/kids.py`, `ythistory.py` | Kids tab from the family's YouTube watch history (run nightly: `--fetch`, then build) |
 | `tools/label_kids.py` | Labels new history videos with the `claude` CLI |
+| `cd/` | CD ripper (`cdrip.py`, `cdrip@.service`, `99-cdrip.rules`): udev starts a rip when a music CD goes in. State in `/srv/music/cd/` (`collection.json`, `status.json`, `rip.log`) |
+| `playlists/`, `server/make_playlist.py` | Our playlists as `Artist — Song — Album` lists, built into `/srv/music/playlists/<slug>.json` + cover |
+| `signin/ytm-signin.mjs` | One-click sign-in over Chrome's DevTools protocol (throwaway profile); never prints the values |
 | `homeassistant/` | Automation that turns the server's MQTT cue into light scenes |
 
-Endpoints: GET `/home /popular /kids /shelf /wishlist /search /list?type=&id= /artist /mood /lyrics /story /gain /stream?v= /prepare /img /ytimg /lights/state /health`; POST `/station /vote /played /lights /lights/enabled`. `/list` types: album, playlist (`LM` = Liked songs), `plex:<id>`, `kids` / `kids:<group>`.
+Endpoints: GET `/home /popular /kids /shelf /cds /cdart /plart /wishlist /search /list?type=&id= /artist /mood /lyrics /story /gain /stream?v= /prepare /img /ytimg /lights/state /health`; POST `/station /vote /delete /played /lights /lights/enabled`. `/list` types: album, playlist (`LM` = Liked songs, `local:<slug>` = ours, `cd-weakest`), `plex:<id>`, `kids` / `kids:<group>`.
 
 ## Build and deploy
 - Server: `MUSIC_HOST=<ssh-host> scripts/install-music.sh`. Config in `~/.config/living-room-tv/` on the server: `hub.secret`, `plex.token`, `ytmusic-browser.json` (sign-in; never commit).
@@ -25,6 +28,10 @@ Endpoints: GET `/home /popular /kids /shelf /wishlist /search /list?type=&id= /a
 - Calm mode folds the player controls after 12 s; the first key press only wakes them (focus goes to Play). Testing with key presses can pause, skip or vote.
 - Leaving the app stops the music (`onUserLeaveHint`); in-app navigation uses `Go.start` (FLAG_ACTIVITY_NO_USER_ACTION).
 - Lights: app → POST `/lights` → MQTT `livingroom/music/lights` → Home Assistant (only lights already on change; the previous scene is restored). Only a TV configured with room "living room" sends cues.
+
+- CD song ratings: 1–5 stars, 80% from Last.fm listeners (Plex `ratingCount`) ranked within the album, 20% across all CDs; +1 thumbs up, +1 for 3+ full plays, −1 for 2+ early skips; thumbs down = 1 star.
+- `/delete` only accepts `plex:` ids whose file is under `CD_LIBRARY` and is audio; it removes the file and its converted copy, logs it, and rescans the artist folder (a scan of the emptied album folder doesn't drop the track).
+- An expired YouTube Music sign-in is detected; the server runs signed out (`/health` `signInExpired`) until the next sign-in.
 
 ## Rules
 - Audio only: no video anywhere in the UI.

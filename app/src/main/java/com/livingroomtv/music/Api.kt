@@ -46,17 +46,20 @@ data class Track(
     val art: String?, val length: Int, val reason: String?, var liked: Boolean,
     val quality: String? = null,                                  // "FLAC · 24-bit / 96 kHz" for the record shelf
     val plex: String? = null,                                     // you own it: play this Plex file instead (lossless)
+    val stars: Int = 0,                                           // CD songs: 1-5, how good it is (0 = not rated)
+    val listeners: Int = 0,                                       // ...and its Last.fm listeners
 ) {
     fun json(): JSONObject = JSONObject().put("type", "track").put("v", v).put("title", title).put("artist", artist)
         .put("artistId", artistId).put("album", album).put("albumId", albumId).put("art", art).put("length", length)
         .put("reason", reason).put("liked", liked).put("quality", quality).put("plex", plex)
+        .put("stars", stars).put("listeners", listeners)
 
     companion object {
         fun from(j: JSONObject) = Track(
             j.getString("v"), j.str("title"), j.str("artist"), j.str("artistId").ifEmpty { null },
             j.str("album").ifEmpty { null }, j.str("albumId").ifEmpty { null }, j.str("art").ifEmpty { null },
             j.optInt("length"), j.str("reason").ifEmpty { null }, j.optBoolean("liked"), j.str("quality").ifEmpty { null },
-            j.str("plex").ifEmpty { null },
+            j.str("plex").ifEmpty { null }, j.optInt("stars"), j.optInt("listeners"),
         )
     }
 }
@@ -93,6 +96,7 @@ object Api {
     fun shelf(): List<Row> = rows(get("/shelf").optJSONArray("rows"))
     fun kids(): List<Row> = rows(get("/kids").optJSONArray("rows"))
     fun popular(): List<Row> = rows(get("/popular").optJSONArray("rows"))
+    fun raw(path: String): JSONObject = get(path)
     fun mood(id: String, title: String): Page = page(get("/mood?id=${enc(id)}&title=${enc(title)}"))
 
     fun lyrics(t: Track): Lyrics {
@@ -109,6 +113,10 @@ object Api {
     }
 
     fun vote(v: String, vote: String) = post("/vote", JSONObject().put("v", v).put("vote", vote))
+    /** Deletes a CD song's file for good; null when done, else what went wrong. */
+    fun deleteCd(v: String): String? = post("/delete", JSONObject().put("v", v)).let {
+        if (it.optBoolean("ok")) null else it.str("error").ifEmpty { "Couldn't delete it." }
+    }
     fun played(v: String, seconds: Int, length: Int, skipped: Boolean) =
         post("/played", JSONObject().put("v", v).put("seconds", seconds).put("length", length).put("skipped", skipped))
     fun prepare(v: String) = get("/prepare?v=${enc(v)}")

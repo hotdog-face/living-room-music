@@ -266,6 +266,29 @@ class RowView(context: Context, val row: Row, onClick: (Row, Item) -> Unit, onHo
  * One song in a list: small art, title and artist, a heart-style thumbs up when it's liked, the length. The playing
  * song shows little bars and its title in the accent colour.
  */
+/** A CD song's rating: five stars, the earned ones lit, with its Last.fm listeners underneath. */
+fun stars(context: Context, t: Track): View = LinearLayout(context).apply {
+    orientation = LinearLayout.VERTICAL
+    gravity = Gravity.CENTER_HORIZONTAL
+    addView(context.label(22, Colors.FAINT, bold = true).apply {
+        text = android.text.SpannableString("★".repeat(5)).apply {
+            setSpan(android.text.style.ForegroundColorSpan(Accent.color), 0, t.stars.coerceIn(0, 5), 0)
+        }
+        ellipsize = null
+        isSingleLine = true
+        gravity = Gravity.CENTER
+    }, LinearLayout.LayoutParams(context.px(150), -2))
+    if (t.listeners > 0) addView(context.label(16, Colors.FAINT, text = listenersWord(t.listeners)),
+        LinearLayout.LayoutParams(-2, -2).apply { topMargin = context.px(2) })
+}
+
+fun listenersWord(n: Int) = when {
+    n >= 1_000_000 -> String.format("%.1fM listeners", n / 1e6)
+    n >= 1_000 -> "${n / 1000}K listeners"
+    n == 1 -> "1 listener"
+    else -> "$n listeners"
+}
+
 class TrackLine(context: Context, val track: Track, number: Int? = null, onClick: (() -> Unit)? = null,
                 onHold: (() -> Unit)? = null) : LinearLayout(context) {
     private val title: TextView
@@ -290,6 +313,7 @@ class TrackLine(context: Context, val track: Track, number: Int? = null, onClick
         addView(playing, LayoutParams(context.px(28), context.px(28)).apply { marginEnd = context.px(26) })
         if (track.liked) addView(ImageView(context).apply { setImageResource(R.drawable.ic_thumb_up); setColorFilter(Colors.DIM) },
             LayoutParams(context.px(26), context.px(26)).apply { marginEnd = context.px(26) })
+        if (track.stars > 0) addView(stars(context, track), LayoutParams(-2, -2).apply { marginEnd = context.px(26) })
         if (track.length > 0) addView(context.label(20, Colors.FAINT, text = clock(track.length * 1000)))
         if (onClick != null) {                                   // on its own; in a ListView the list does focus and clicks
             isFocusable = true
@@ -496,10 +520,35 @@ object Go {
             activity.toast(if (t.liked) "Added to Liked songs" else "Removed from Liked songs")
         }
         options += "Thumbs down (never play it again)" to { Player.vote(activity, t, "dislike"); activity.toast("Got it. It won't come up again.") }
+        if (cdSong(t) != null) options += "Delete from my CDs (for good)" to { deleteCd(activity, t) }
         AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle(t.title)
             .setItems(options.map { it.first }.toTypedArray()) { _, i -> options[i].second() }
             .show()
+    }
+
+    /** The song's file in Mitchell's CD rips ("plex:<id>"), when it plays from one. The server checks it's really a rip. */
+    fun cdSong(t: Track): String? = (t.plex ?: t.v).takeIf { it.startsWith("plex:") }
+
+    /** Asks first (Cancel is the default), then deletes the song's file from the CD collection for good. */
+    fun deleteCd(activity: Activity, t: Track) {
+        val id = cdSong(t) ?: return
+        AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Delete \"${t.title}\" from your CDs?")
+            .setMessage("${t.artist}${t.album?.let { " · $it" } ?: ""}\n\nThe file is deleted for good. This can't be undone.")
+            .setPositiveButton("Delete") { _, _ ->
+                Bg.run({ Api.deleteCd(id) }) { r ->
+                    val err = r.getOrElse { "Couldn't reach the music server." }
+                    if (err == null) {
+                        activity.toast("Deleted \"${t.title}\".")
+                        (activity as? DetailActivity)?.removed(id)
+                        if (Player.current?.let { cdSong(it) } == id) Player.next(activity)
+                    } else activity.toast(err)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+            .getButton(android.content.DialogInterface.BUTTON_NEGATIVE)?.requestFocus()
     }
 
     fun hold(activity: Activity, item: Item) {

@@ -1,0 +1,2 @@
+# A music CD went into a drive: rip it (cd/cdrip.py via cdrip@<drive>.service).
+ACTION=="change", SUBSYSTEM=="block", KERNEL=="sr[0-9]*", ENV{ID_CDROM_MEDIA_TRACK_COUNT_AUDIO}=="?*", RUN+="/usr/bin/systemctl start --no-block cdrip@%k.service"

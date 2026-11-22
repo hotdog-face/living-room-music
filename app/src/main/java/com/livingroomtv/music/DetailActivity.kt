@@ -119,6 +119,15 @@ class DetailActivity : Activity() {
         }
     }
 
+    /** A song was deleted from the CDs: take it off this list and stay where she was in it. */
+    fun removed(v: String) {
+        val p = page ?: return
+        val i = p.tracks.indexOfFirst { it.v == v || it.plex == v }
+        if (i < 0) return
+        show(p.copy(tracks = p.tracks.filterIndexed { j, _ -> j != i }))
+        songs?.let { l -> l.post { l.setSelection(minOf(i, maxOf(0, l.count - 1))); l.requestFocus() } }
+    }
+
     /** What plays once the list runs out: Liked songs keeps shuffling likes, a Kids list keeps to its kids' songs. */
     private fun after(): String? = when { key == "LM" -> "likes"; type == "kids" -> key; else -> null }
 

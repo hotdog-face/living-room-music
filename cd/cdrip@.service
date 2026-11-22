@@ -1,0 +1,13 @@
+# One CD rip: started by udev (99-cdrip.rules) when a music CD goes into /dev/%i. See cd/cdrip.py.
+[Unit]
+Description=Rip the CD in /dev/%i to the NAS music library
+After=network-online.target mnt-nas-plex.automount
+
+[Service]
+Type=oneshot
+User=__USER__
+Group=cdrom
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /srv/cd/cdrip.py /dev/%i
+TimeoutStartSec=3h
+Nice=5

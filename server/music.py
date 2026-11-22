@@ -11,11 +11,15 @@ GET  /home                   rows: stations, new finds, artists you might love, 
 GET  /list?type=playlist|album&id=    a playlist ("LM" = Liked songs) or an album: title, art, tracks
 GET  /artist?id=             an artist: top songs, albums, singles, fans also like
 GET  /search?q=              songs, artists, albums, playlists (never videos)
+GET  /cds                    the CD collection (cd/cdrip.py rips them) for the CDs tab, and what the drive is doing
+GET  /cdart?f=<folder>&n=front.jpg|back.jpg|disc.jpg&s=   a CD's own artwork
+GET  /plart?n=<slug>             a living-room playlist's cover (/srv/music/playlists/<slug>.jpg)
 POST /station                {"id": "likes"|"blend"|"fresh"|"radio:<videoId>"|"artist:<channelId>", "exclude": [ids], "n"}
                              -> the next tracks of an endless station (the TV asks again near the end of its queue)
-GET  /stream?v=<videoId>     the song's audio (AAC from YouTube), proxied with Range support so the TV can seek
+GET  /stream?v=<videoId>     the song's audio (Opus, or 256k AAC with Premium, from YouTube), proxied with Range support so the TV can seek
 GET  /prepare?v=             look up a song's audio ahead of time (the TV asks for the next song while one plays)
 POST /vote                   {"v", "vote": "like"|"dislike"|"none"} -> YouTube Music's thumbs (likes land in Liked songs)
+POST /delete                 {"v": "plex:<id>"} -> deletes that song's file from the CD rips (00_FLAC only) for good
 POST /played                 {"v", "seconds", "length", "skipped"} -> listening history, for discovery
 
 Discovery (rebuilt every 6 hours, and soon after a like): YouTube Music's song radios seeded from ~40 liked songs (recent
@@ -29,8 +33,11 @@ Sign-in (Mitchell does it, once): YouTube Music request headers from his browser
 likes, playlists and discovery need it. Every TV call carries X-Hub-Secret (the hub's shared secret).
 """
 import argparse
+import bisect
 import collections
+import glob
 import json
+import math
 import os
 import random
 import re
@@ -54,6 +61,7 @@ BRAND = os.path.join(CONF, "ytmusic-brand")                     # set by signin.
 DATA = os.environ.get("MUSIC_DATA", "/srv/music")
 DISCOVERY = os.path.join(DATA, "discovery.json")
 COOKIES = os.path.join(DATA, "cookies.txt")
+LIKED_SNAP = os.path.join(DATA, "liked.json")                   # last good Liked songs, used while the sign-in is expired
 SECRET = open(os.path.join(CONF, "hub.secret")).read().strip()
 REBUILD_EVERY = 6 * 3600
 NOT_MUSIC = {"MUSIC_VIDEO_TYPE_PODCAST_EPISODE", "MUSIC_VIDEO_TYPE_UGC"}   # podcasts and random uploads stay out
@@ -72,12 +80,20 @@ class Yt:
         self.mtime = None
         self.client = YTMusic()
         self.signed_in = False
+        self.expired = False
+
+    def expire(self, why):
+        """YouTube answered signed out (old cookies): run signed out until signin.py writes a new headers file."""
+        with self.lock:
+            if self.signed_in:
+                self.client, self.signed_in, self.expired = YTMusic(), False, True
+                log("YouTube Music sign-in expired, running signed out until Mitchell signs in again:", why)
 
     def get(self):
         with self.lock:
             m = os.path.getmtime(AUTH) if os.path.exists(AUTH) else None
             if m != self.mtime:
-                self.mtime = m
+                self.mtime, self.expired = m, False
                 try:
                     brand = open(BRAND).read().strip() if os.path.exists(BRAND) else None
                     self.client = (YTMusic(AUTH, user=brand) if brand else YTMusic(AUTH)) if m else YTMusic()
@@ -290,13 +306,48 @@ def cached(key, ttl, fn):
     return val
 
 
+def signed_out_answer(e):
+    """ytmusicapi's KeyError when YouTube serves the signed-out page ("Sign in to listen to your liked tracks")."""
+    s = str(e)
+    return "signInEndpoint" in s or ("singleColumnBrowseResultsRenderer" in s and "twoColumnBrowseResultsRenderer" in s)
+
+
+def liked_saved():
+    """The last good Liked songs: liked.json, else the liked tracks the TV has already seen (meta table)."""
+    try:
+        return json.load(open(LIKED_SNAP))
+    except Exception:
+        pass
+    try:
+        with db() as c:
+            return [t for t in (json.loads(j) for (j,) in c.execute("SELECT json FROM meta"))
+                    if t.get("liked") and not t.get("v", "").startswith("plex:")]
+    except Exception as e:
+        log("liked fallback:", e)
+        return []
+
+
 def liked():
-    """Every liked song, newest like first (empty when not signed in)."""
+    """Every liked song, newest like first. Signed out or sign-in expired: the last good copy."""
     def load():
         yt = YT.get()
         if not YT.signed_in:
-            return []
-        return tracks(yt.get_liked_songs(limit=5000).get("tracks"))
+            return liked_saved() if YT.expired else []
+        try:
+            out = tracks(yt.get_liked_songs(limit=5000).get("tracks"))
+        except Exception as e:
+            if signed_out_answer(e):
+                YT.expire("Liked songs came back signed out")
+            else:
+                log("liked:", repr(e)[:200])
+            return liked_saved()
+        if out:
+            try:
+                json.dump(out, open(LIKED_SNAP + ".tmp", "w"))
+                os.replace(LIKED_SNAP + ".tmp", LIKED_SNAP)
+            except Exception as e:
+                log("liked snapshot:", e)
+        return out
     return cached("liked", 600, load)
 
 
@@ -506,7 +557,75 @@ def p_track(t):
             "album": t.get("parentTitle"), "albumId": f"plex:{t['parentRatingKey']}" if t.get("parentRatingKey") else None,
             "art": plex_img(t.get("parentThumb") or t.get("thumb") or t.get("grandparentThumb")),
             "length": int((t.get("duration") or 0) / 1000), "quality": q,
-            "liked": (t.get("userRating") or 0) >= 8}
+            "liked": (t.get("userRating") or 0) >= 8, **cd_stars(t["ratingKey"])}
+
+
+# ---- CD song ratings: which songs on Mitchell's CDs are the good ones (for curating, see /delete) -------------------
+
+def cd_ratings():
+    """plex rating key -> {"stars": 1..5, "listeners": n} for every song in the CD rips. Mostly how a song does against
+    the rest of its own album on Last.fm (Plex's ratingCount = listeners), a little against all the CDs, then nudged by
+    the TV's own history: thumbs, plays to the end, quick skips. A thumbs down is always one star."""
+    def load():
+        cd = [t for t in shelf_tracks() if "/00_FLAC/" in (((t.get("Media") or [{}])[0].get("Part") or [{}])[0].get("file") or "")]
+        rated = [t for t in cd if t.get("ratingCount")]
+        if not rated:
+            return {}
+        pop = {t["ratingKey"]: math.log10(int(t["ratingCount"]) + 1) for t in rated}
+
+        def pct(keys):                                            # 0 = least listened, 1 = most, ties share a rank
+            vals = sorted(pop[k] for k in keys)
+            n = len(vals)
+            return {k: (bisect.bisect_left(vals, pop[k]) + bisect.bisect_right(vals, pop[k]) - 1) / 2 / max(1, n - 1) for k in keys}
+        everywhere = pct(list(pop))
+        by_album = collections.defaultdict(list)
+        for t in rated:
+            by_album[t.get("parentRatingKey")].append(t["ratingKey"])
+        in_album = {}
+        for keys in by_album.values():
+            in_album.update(pct(keys) if len(keys) >= 3 else {k: everywhere[k] for k in keys})
+        with db() as c:
+            votes = {r[0][5:]: r[1] for r in c.execute("SELECT v, vote FROM votes WHERE v LIKE 'plex:%'")}
+            plays = {r[0][5:]: (r[1], r[2]) for r in c.execute(
+                "SELECT v, sum(skipped=0 AND seconds >= 0.8*length), sum(skipped=1 AND seconds < 30) FROM plays "
+                "WHERE v LIKE 'plex:%' GROUP BY v")}
+        out = {}
+        for t in cd:
+            k = t["ratingKey"]
+            liked = votes.get(k) == "like" or (t.get("userRating") or 0) >= 8
+            if votes.get(k) == "dislike" or (t.get("userRating") or 10) <= 2:
+                out[k] = {"stars": 1, "listeners": int(t.get("ratingCount") or 0)}
+                continue
+            if k not in pop:
+                if liked:
+                    out[k] = {"stars": 5, "listeners": 0}
+                continue
+            score = 0.8 * in_album[k] + 0.2 * everywhere[k]
+            stars = 1 + round(score * 4)
+            full, quick = plays.get(k, (0, 0))
+            stars += (1 if liked else 0) + (1 if (full or 0) >= 3 else 0) - (1 if (quick or 0) >= 2 else 0)
+            out[k] = {"stars": max(1, min(5, stars)), "listeners": int(t["ratingCount"])}
+        return out
+    return cached("cd-ratings", 900, load)
+
+
+def cd_stars(rk):
+    try:
+        r = cd_ratings().get(rk)
+    except Exception as e:
+        log("cd ratings", e)
+        r = None
+    return {"stars": r["stars"], "listeners": r["listeners"]} if r else {}
+
+
+def weakest_cd_songs(n=200):
+    """The lowest-rated songs on the CDs, worst first (fewest listeners first among equal stars)."""
+    r = cd_ratings()
+    tracks = [t for t in shelf_tracks() if t["ratingKey"] in r]
+    tracks.sort(key=lambda t: (r[t["ratingKey"]]["stars"], r[t["ratingKey"]]["listeners"]))
+    items = [p_track(t) for t in tracks[:n]]
+    return {"title": "Weakest songs on your CDs", "subtitle": "Lowest-rated first · hold OK on one to delete it",
+            "art": next((t["art"] for t in items if t.get("art")), None), "tracks": items}
 
 
 def shelf_tracks():
@@ -643,6 +762,94 @@ def shelf_search(q):
     return rows
 
 
+# ---- CDs: Mitchell's CD collection, ripped by cd/cdrip.py (put a disc in the server's drive) -------------------
+
+CD_DATA = os.path.join(DATA, "cd")
+# Where the rips are on this machine (the Plex share mounted here) and the share root Plex paths map onto.
+CD_LIBRARY = os.environ.get("CD_LIBRARY", "/mnt/nas/plex/Library/Music Library/00_FLAC")
+CD_ART = ("front.jpg", "back.jpg", "disc.jpg")
+_cds = {"mtime": 0}
+
+
+def _plex_rel(path):
+    """A Plex file path, as the part after the share ("Library/Music Library/00_FLAC/..."): the container sees the share
+    at two places."""
+    return path.split("/Plex/", 1)[-1] if "/Plex/" in path else path
+
+
+def cd_albums():
+    """Album folder -> Plex album id, from every track's file path."""
+    out = {}
+    for t in shelf_tracks():
+        for m in t.get("Media") or []:
+            for part in m.get("Part") or []:
+                if part.get("file"):
+                    out.setdefault(os.path.dirname(_plex_rel(part["file"])), t.get("parentRatingKey"))
+    return out
+
+
+def cd_art_url(folder, name):
+    return "/cdart?" + urllib.parse.urlencode({"f": os.path.relpath(folder, CD_LIBRARY), "n": name})
+
+
+def cds_page():
+    """The CD collection for the CDs tab's cover flow: one case per album (a box set's discs together), newest first,
+    plus what the drive is doing right now."""
+    path = os.path.join(CD_DATA, "collection.json")
+    try:
+        mtime = os.path.getmtime(path)
+        items = json.load(open(path))
+    except (OSError, ValueError):
+        mtime, items = 0, []
+    if mtime != _cds["mtime"]:                                    # a new disc: Plex's lists are out of date
+        forget("plex-tracks", "plex-albums")
+        _cds["mtime"] = mtime
+    albums = cd_albums()
+    cases = {}
+    for e in items:
+        folder = e.get("folder") or ""
+        c = cases.setdefault(folder, {"artist": e.get("artist"), "album": e.get("album"), "year": e.get("year"),
+                                      "label": e.get("label"), "discs": e.get("discs") or 1, "have": set(),
+                                      "tracks": [], "added": e.get("added") or 0, "accurate": [0, 0, True],
+                                      "needs_info": False, "folder": folder, "art": set()})
+        c["have"].add(e.get("disc") or 1)
+        c["tracks"] += e.get("tracks") or []
+        c["added"] = max(c["added"], e.get("added") or 0)
+        c["needs_info"] |= bool(e.get("needs_info"))
+        c["art"] |= set(e.get("art") or [])
+        a = e.get("accurate") or {}
+        if a:
+            c["accurate"][0] += a.get("ok", 0)
+            c["accurate"][1] += a.get("tracks", 0)
+            c["accurate"][2] &= bool(a.get("in_db", True))
+    out = []
+    for folder, c in cases.items():
+        rel = _plex_rel(folder.replace(CD_LIBRARY.split("/Library/", 1)[0], "/Plex"))
+        rk = albums.get(rel)
+        art_dir = os.path.join(folder, "Artwork")
+        art = {n.split(".")[0]: cd_art_url(folder, n) for n in CD_ART if os.path.exists(os.path.join(art_dir, n))}
+        if "front" not in art and rk:
+            a = next((x for x in shelf_albums() if x["ratingKey"] == rk), None)
+            if a and a.get("thumb"):
+                art["front"] = plex_img(a["thumb"])
+        ok, n, in_db = c["accurate"]
+        out.append({"id": f"plex:{rk}" if rk else "", "title": c["album"], "artist": c["artist"], "year": c["year"] or "",
+                    "label": c["label"] or "", "discs": c["discs"], "ripped": len(c["have"]), "tracks": c["tracks"],
+                    "added": c["added"], "art": art, "needs_info": c["needs_info"],
+                    "verified": "" if not n else ("Not in AccurateRip" if not in_db else f"{ok}/{n} AccurateRip")})
+    out.sort(key=lambda x: -x["added"])
+    if any(not x["id"] and time.time() - x["added"] < 900 for x in out):
+        forget("plex-tracks", "plex-albums")                      # Plex is still scanning a new disc: ask again next time
+    try:
+        st = json.load(open(os.path.join(CD_DATA, "status.json")))
+    except (OSError, ValueError):
+        st = {"state": "idle"}
+    if st.get("state") in ("done", "error") and time.time() - st.get("at", 0) > 6 * 3600:
+        st = {"state": "idle"}                                     # yesterday's "Done" isn't news
+    st["drive"] = bool(glob.glob("/dev/sr[0-9]*"))
+    return {"cds": out, "status": st}
+
+
 def shelf_station(id_, exclude, n):
     ex = set(exclude)
     albums = {a["ratingKey"] for a in shelf_albums()}
@@ -717,6 +924,39 @@ def trim_cache(limit=8 * 1024 ** 3):
         f = files.pop(0)
         total -= os.path.getsize(f)
         os.remove(f)
+
+
+DELETED_LOG = os.path.join(DATA, "deleted.log")
+NAS_PLEX = CD_LIBRARY.split("/Library/", 1)[0]                   # the Plex share here: /mnt/nas/plex
+
+
+def delete_cd_track(rk):
+    """Mitchell curating his CDs from the TV: deletes the song's file for good (only a file in the CD rips, 00_FLAC),
+    its 16/48 copy, then has Plex rescan the album folder so it drops the song. Returns an error message or None."""
+    t = (plex(f"/library/metadata/{rk}").get("Metadata") or [{}])[0]
+    part = ((t.get("Media") or [{}])[0].get("Part") or [{}])[0]
+    plex_file = part.get("file") or ""
+    local = os.path.realpath(os.path.join(NAS_PLEX, _plex_rel(plex_file)))
+    if not plex_file or not local.startswith(CD_LIBRARY + "/") or not re.search(r"\.(flac|wav|mp3|m4a|aiff?)$", local, re.I):
+        return "That song isn't one of your CDs."
+    if not os.path.isfile(local):
+        return "That song's file is already gone."
+    os.remove(local)
+    for f in (os.path.join(CACHE, f"{rk}.flac"),):
+        if os.path.exists(f):
+            os.remove(f)
+    with open(DELETED_LOG, "a") as f:
+        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\t{rk}\t{t.get('grandparentTitle')}\t{t.get('title')}\t{local}\n")
+    log("deleted", f"plex:{rk}", os.path.relpath(local, CD_LIBRARY))
+    with db() as c:
+        c.execute("DELETE FROM votes WHERE v=?", (f"plex:{rk}",))
+    try:                         # the artist's folder: Plex skips an album folder left empty; it empties its trash after a scan
+        folder = urllib.parse.quote(os.path.dirname(os.path.dirname(plex_file)), safe="")
+        plex(f"/library/sections/{PLEX_SECTION}/refresh?path={folder}")
+    except Exception as e:
+        log("plex scan after delete", e)
+    forget("plex-tracks", "plex-albums", "cd-ratings", f"part:{rk}", f"fmt:{rk}")
+    return None
 
 
 def plex_part(rk):
@@ -892,15 +1132,15 @@ STATIONS = [
 
 
 def home():
+    likes = liked()                                               # first: it notices an expired sign-in
     yt = YT.get()
     rows = []
     if not YT.signed_in:
         rows.append({"id": "signin", "title": "Sign in to see your likes and new finds", "items": []})
     d = discovery()
-    likes = liked()
     bad = disliked()
     greeting, tcard = time_card()
-    if YT.signed_in:
+    if YT.signed_in or likes:
         rows.append({"id": "stations", "title": greeting, "items": [tcard] + [
             {"type": "station", "id": s, "title": t, "subtitle": sub,
              "art": next((x["art"] for x in (d.get("fresh") if s == "fresh" else likes)[i * 3:] if x.get("art")), None)}
@@ -924,6 +1164,15 @@ def home():
                          "items": [p_album(a) for a in recent + [a for a in rest if a not in recent]][:20]})
     except Exception as e:
         log("plex shelf:", e)
+    try:
+        ours = [card("playlist", p["id"], p.get("title"), p.get("subtitle") or f"{len(p.get('tracks') or [])} songs",
+                     art_url=p.get("art")) for p in our_playlists()]
+        if ours:                                                  # right under the stations, before the Plex shelf
+            ids = [r["id"] for r in rows]
+            at = ids.index("stations") + 1 if "stations" in ids else (ids.index("signin") + 1 if "signin" in ids else 0)
+            rows.insert(at, {"id": "ours", "title": "Playlists", "items": ours})
+    except Exception as e:
+        log("our playlists:", e)
     fresh = [t for t in d.get("fresh", []) if t["v"] not in bad]
     if fresh:
         rows.append({"id": "fresh", "title": "New finds for you", "items": fresh[:30]})
@@ -976,12 +1225,42 @@ def home():
                 rows.append({"id": "yt-" + shelf.get("title", ""), "title": shelf.get("title"), "items": items})
     except Exception as e:
         log("yt home:", e)
-    return {"signedIn": YT.signed_in, "rows": rows, "built": d.get("built")}
+    return {"signedIn": YT.signed_in, "signInExpired": YT.expired, "rows": rows, "built": d.get("built")}
+
+
+PLAYLISTS = os.path.join(DATA, "playlists")
+
+
+def our_playlists():
+    """Playlists made for the living room (`/srv/music/playlists/<slug>.json`: title, subtitle, art, tracks as the TV
+    wants them). They need no YouTube Music sign-in; songs you own in Plex still play from your files (mark)."""
+    out = []
+    for f in sorted(glob.glob(os.path.join(PLAYLISTS, "*.json"))):
+        try:
+            p = json.load(open(f))
+        except (OSError, ValueError) as e:
+            log("playlist", f, e)
+            continue
+        p["id"] = "local:" + os.path.basename(f)[:-5]
+        out.append(p)
+    return out
+
+
+def our_playlist(slug):
+    p = next((x for x in our_playlists() if x["id"] == "local:" + slug), None)
+    if not p:
+        raise KeyError(slug)
+    return {"title": p.get("title"), "subtitle": p.get("subtitle") or f"{len(p.get('tracks') or [])} songs",
+            "art": p.get("art"), "tracks": p.get("tracks") or []}
 
 
 def list_page(kind, id_):
+    if id_ == "cd-weakest":
+        return weakest_cd_songs()
     if id_.startswith("plex:"):
         return shelf_album(id_[5:])
+    if id_.startswith("local:"):
+        return our_playlist(id_[6:])
     if kind == "kids":
         return kids_list(id_)
     yt = YT.get()
@@ -1489,7 +1768,8 @@ def resolve(v):
     hit = _streams.get(v)
     if hit and hit[2] > time.time():
         return hit
-    opts = {"format": "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio", "quiet": True, "no_warnings": True,
+    # 256k AAC (Premium only), else Opus ~160k (sounds better than the 128k AAC that's always there), else anything.
+    opts = {"format": "141/251/bestaudio[acodec=opus]/bestaudio[ext=m4a]/bestaudio", "quiet": True, "no_warnings": True,
             "noplaylist": True, "js_runtimes": {"node": {}}}
     if YT.signed_in and os.path.exists(COOKIES):
         opts["cookiefile"] = COOKIES
@@ -1543,7 +1823,7 @@ class Handler(BaseHTTPRequestHandler):
         q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
         if u.path == "/health":
             YT.get()
-            return self._json({"ok": True, "signedIn": YT.signed_in, "discovery": discovery().get("built")})
+            return self._json({"ok": True, "signedIn": YT.signed_in, "signInExpired": YT.expired, "discovery": discovery().get("built")})
         if not self._ok():
             return
         try:
@@ -1557,8 +1837,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(lyrics(q["v"], q.get("title", ""), q.get("artist", ""), int(q.get("length") or 0)))
             if u.path == "/shelf":
                 return self._json(shelf_page())
+            if u.path == "/cds":
+                return self._json(cds_page())
+            if u.path == "/cdart":
+                return self._cdart(q["f"], q["n"], int(q.get("s") or 600))
             if u.path == "/ytimg":
                 return self._ytimg(q["v"], int(q.get("s") or 500))
+            if u.path == "/plart":                               # a living-room playlist's cover (playlists/<slug>.jpg)
+                slug = re.sub(r"[^a-z0-9-]", "", q.get("n", ""))
+                data = open(os.path.join(PLAYLISTS, slug + ".jpg"), "rb").read()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "max-age=86400")
+                self.end_headers()
+                return self.wfile.write(data)
             if u.path == "/gain":
                 if q.get("wait") == "0":                         # only if already measured; measure in the background
                     with db() as c:
@@ -1620,7 +1913,7 @@ class Handler(BaseHTTPRequestHandler):
                              f"{ {'like': 10, 'dislike': 2}.get(vote, -1) }", method="PUT")
                     except Exception as e:
                         log("plex rate", e)
-                    forget("plex-tracks")
+                    forget("plex-tracks", "cd-ratings")
                     return self._json({"ok": True})
                 if YT.signed_in:
                     try:
@@ -1631,6 +1924,16 @@ class Handler(BaseHTTPRequestHandler):
                 if vote == "like":
                     rebuild_soon(300)
                 return self._json({"ok": ok})
+            if self.path == "/delete":
+                v = b.get("v") or ""
+                if not v.startswith("plex:"):
+                    return self._json({"ok": False, "error": "Only songs from your CDs can be deleted."})
+                try:
+                    err = delete_cd_track(v[5:])
+                except Exception as e:
+                    log("delete", v, e)
+                    err = "Couldn't delete it. Try again in a minute."
+                return self._json({"ok": err is None, "error": err})
             if self.path == "/lights":
                 lights_update(b)
                 return self._json({"ok": True, "enabled": lights_enabled()})
@@ -1663,6 +1966,25 @@ class Handler(BaseHTTPRequestHandler):
             ctype = r.headers.get("Content-Type", "image/jpeg")
         self.send_response(200)
         self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(b)))
+        self.send_header("Cache-Control", "max-age=86400")
+        self.end_headers()
+        self.wfile.write(b)
+
+    def _cdart(self, rel, name, size):
+        """A CD's own artwork (front, back, the disc) from its Artwork folder on the NAS, resized."""
+        path = os.path.realpath(os.path.join(CD_LIBRARY, rel, "Artwork", name))
+        if name not in CD_ART or not path.startswith(CD_LIBRARY + "/") or not os.path.exists(path):
+            return self._json({"error": "no such art"}, 404)
+        from PIL import Image
+        import io
+        im = Image.open(path).convert("RGB")
+        im.thumbnail((max(64, min(size, 1600)),) * 2)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=88)
+        b = buf.getvalue()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
         self.send_header("Content-Length", str(len(b)))
         self.send_header("Cache-Control", "max-age=86400")
         self.end_headers()
